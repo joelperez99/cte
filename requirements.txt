@@ -1,7 +1,7 @@
-streamlit
-pandas
-beautifulsoup4
-lxml
-xlsxwriter
-selenium
-webdriver-manager
+streamlit>=1.38
+pandas>=2.2
+beautifulsoup4>=4.12
+lxml>=5.2
+xlsxwriter>=3.2
+selenium>=4.12
+webdriver-manager>=4.0
