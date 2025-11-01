@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-# streamlit_app.py — Caliente Tenis → Partidos del 1 de noviembre → Excel
-# Modos:
-#  1) Scrape en vivo con Selenium (corregido: usa Service para evitar "multiple values for 'options'")
-#  2) Subir HTML guardado
-#  3) Pegar HTML
+# Caliente Tenis → Partidos del 1 de noviembre → Excel
+# Modos: Selenium (si hay Chrome), Subir HTML, Pegar HTML
 
 import io
 import re
 import time
+import shutil
+import platform
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -89,7 +88,6 @@ def parse_html_for_matches(html: str) -> List[Dict]:
     return rows
 
 def filter_by_target_date(rows: List[Dict]) -> List[Dict]:
-    # Placeholder: si detectas fecha en el HTML, aplícala aquí.
     return rows
 
 def to_excel_download(df: pd.DataFrame) -> bytes:
@@ -103,7 +101,7 @@ st.title("🎾 Caliente (Tenis) → Exportar partidos del 1 de noviembre a Excel
 
 st.markdown("""
 **Modos de entrada**:
-1. **Scrape en vivo (Selenium)** — abre Chrome en modo headless y extrae los partidos.  
+1. **Scrape en vivo (Selenium)** — requiere **Google Chrome** en el sistema.  
 2. **Subir HTML** — sube un `.html` guardado de la página.  
 3. **Pegar HTML** — pega el código fuente de la página.
 """)
@@ -111,55 +109,72 @@ st.markdown("""
 mode = st.radio("Elige el modo", ["Scrape en vivo (Selenium)", "Subir HTML", "Pegar HTML"])
 rows: List[Dict] = []
 
+def chrome_is_available() -> bool:
+    # Busca binarios comunes
+    candidates = [
+        shutil.which("google-chrome"),
+        shutil.which("chrome"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        shutil.which("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"),
+        shutil.which("C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"),
+        shutil.which("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    ]
+    return any(c for c in candidates if c)
+
 if mode == "Scrape en vivo (Selenium)":
-    st.info("Si estás en Streamlit Cloud, este modo podría no funcionar por restricciones del navegador.")
     url = st.text_input("URL a scrapear", value="https://sports.caliente.mx/es_MX/Tenis")
     scroll_secs = st.slider("Segundos de scroll/carga (más tiempo = más eventos)", 3, 40, 12)
     run = st.button("Iniciar scraping")
 
     if run:
-        with st.spinner("Abriendo navegador y cargando la página…"):
-            html = ""
-            try:
-                from selenium import webdriver
-                from selenium.webdriver.chrome.options import Options
-                from selenium.webdriver.chrome.service import Service
-                from webdriver_manager.chrome import ChromeDriverManager
+        if not chrome_is_available():
+            st.error(
+                "No se encontró **Google Chrome** en este entorno. "
+                "Si estás en **Streamlit Cloud**, usa *Subir HTML* o *Pegar HTML*. "
+                "En tu PC, instala Google Chrome y vuelve a intentar."
+            )
+        else:
+            with st.spinner("Abriendo navegador y cargando la página…"):
+                html = ""
+                try:
+                    from selenium import webdriver
+                    from selenium.webdriver.chrome.options import Options
+                    from selenium.webdriver.chrome.service import Service
+                    from webdriver_manager.chrome import ChromeDriverManager
 
-                opts = Options()
-                # flags de headless modernos
-                opts.add_argument("--headless=new")
-                opts.add_argument("--no-sandbox")
-                opts.add_argument("--disable-gpu")
-                opts.add_argument("--disable-dev-shm-usage")
-                opts.add_argument("--window-size=1920,1080")
+                    opts = Options()
+                    opts.add_argument("--headless=new")
+                    opts.add_argument("--no-sandbox")
+                    opts.add_argument("--disable-gpu")
+                    opts.add_argument("--disable-dev-shm-usage")
+                    opts.add_argument("--window-size=1920,1080")
 
-                # ✅ CORRECCIÓN: usar Service(...)
-                service = Service(ChromeDriverManager().install())
-                driver = webdriver.Chrome(service=service, options=opts)
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=opts)
 
-                driver.set_page_load_timeout(60)
-                driver.get(url)
-                time.sleep(4)
+                    driver.set_page_load_timeout(60)
+                    driver.get(url)
+                    time.sleep(4)
 
-                t0 = time.time()
-                last_h = 0
-                while time.time() - t0 < scroll_secs:
-                    driver.execute_script("window.scrollBy(0, document.body.scrollHeight/3);")
-                    time.sleep(1.0)
-                    h = driver.execute_script("return document.body.scrollHeight")
-                    if h == last_h:
-                        break
-                    last_h = h
+                    t0 = time.time()
+                    last_h = 0
+                    while time.time() - t0 < scroll_secs:
+                        driver.execute_script("window.scrollBy(0, document.body.scrollHeight/3);")
+                        time.sleep(1.0)
+                        h = driver.execute_script("return document.body.scrollHeight")
+                        if h == last_h:
+                            break
+                        last_h = h
 
-                html = driver.page_source
-                driver.quit()
-            except Exception as e:
-                st.error(f"Error en Selenium: {e}")
+                    html = driver.page_source
+                    driver.quit()
+                except Exception as e:
+                    st.error(f"Error en Selenium: {e}")
 
-        if html:
-            parsed = parse_html_for_matches(html)
-            rows = filter_by_target_date(parsed)
+            if html:
+                parsed = parse_html_for_matches(html)
+                rows = filter_by_target_date(parsed)
 
 elif mode == "Subir HTML":
     up = st.file_uploader("Sube el archivo .html de la página", type=["html", "htm"])
@@ -174,11 +189,10 @@ elif mode == "Pegar HTML":
 
 if rows:
     df = pd.DataFrame(rows)
-
-    # Orden por hora si existe
     try:
         df["_orden_hora"] = df["hora_aprox"].apply(
-            lambda x: datetime.strptime(x, "%H:%M").time() if x else datetime.min.time())
+            lambda x: datetime.strptime(x, "%H:%M").time() if x else datetime.min.time()
+        )
         df = df.sort_values(by=["_orden_hora", "jugador_a", "jugador_b"]).drop(columns=["_orden_hora"])
     except Exception:
         df = df.sort_values(by=["jugador_a", "jugador_b"])
